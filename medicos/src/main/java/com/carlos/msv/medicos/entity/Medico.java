@@ -46,12 +46,15 @@ public class Medico {
     private String cedulaProfesional;
 
     @Column(name = "ESPECIALIDAD", nullable = false)
+    @Enumerated(EnumType.STRING)
     private EspecialidadMedico especialidad;
 
     @Column(name = "DISPONIBILIDAD", nullable = false)
+    @Enumerated(EnumType.STRING)
     private DisponibilidadMedico disponibilidad;
 
     @Column(name = "ESTADO_REGISTRO", nullable = false)
+    @Enumerated(EnumType.STRING)
     private EstadoRegistro estadoRegistro;
 
     private void validarDatos(String nombre, String apellidoPaterno, String apellidoMaterno,

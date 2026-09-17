@@ -1,6 +1,6 @@
     package com.carlos.commons.controller;
 
-    import com.carlos.escuela.services.CrudService;
+    import com.carlos.commons.service.CrudService;
     import jakarta.validation.Valid;
     import jakarta.validation.constraints.Positive;
     import lombok.AllArgsConstructor;

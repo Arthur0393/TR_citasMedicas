@@ -23,13 +23,13 @@ public record MedicoResponse(
         Short edad,
 
         @Schema(
-                description = "Correo electronico del medico",
-                example = "carlos.romero@correo.com"
+                description = "Correo electrónico del medico",
+                example = "carlos.romero@dominio.com"
         )
         String email,
 
         @Schema(
-                description = "Numero telefonico del medico",
+                description = "Numero telefónico del medico",
                 example = "2461234567"
         )
         String telefono,

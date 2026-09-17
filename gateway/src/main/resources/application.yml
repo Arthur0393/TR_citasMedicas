@@ -12,9 +12,18 @@ spring:
             - id: medicos
               uri: lb://medicos
               predicates:
-                - Path=/api/a/**
+                - Path=/api/medicos/**
               filters:
                 - StripPrefix=2
+
+            - id: citas
+              uri: lb://citas
+              predicates:
+                - Path=/api/citas/**
+              filters:
+                - StripPrefix=2
+
+
 
             - id: servicio-b
               uri: lb://servicio-b

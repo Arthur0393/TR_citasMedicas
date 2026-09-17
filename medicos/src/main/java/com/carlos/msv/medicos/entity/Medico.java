@@ -77,7 +77,7 @@ public class Medico {
                 "La cedula es requerido y debe contener exactamente 12 caracteres");
 
         ValoresNumerico.validarRangoShort(edad, (short) 18, (short) 100,
-                "La cedula es requerido y debe contener exactamente 12 caracteres");
+                "La edad es requerida y debe ser entre un rango de 18 a 100");
 
         if (especialidad == null)
             throw new IllegalArgumentException("La especialiad es requerida");
@@ -104,7 +104,7 @@ public class Medico {
         this.especialidad = especialidad;
     }
 
-    private void actualizarDisponibilidad(DisponibilidadMedico disponibilidad) {
+    public void actualizarDisponibilidadMedico(DisponibilidadMedico disponibilidad) {
 
         validadNoEliminado();
 

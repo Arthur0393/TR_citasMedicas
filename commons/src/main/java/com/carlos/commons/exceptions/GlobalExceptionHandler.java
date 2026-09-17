@@ -4,12 +4,8 @@ import com.carlos.commons.dto.CustomErrorResponse;
 import feign.FeignException;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.orm.jpa.JpaSystemException;
-import org.springframework.transaction.TransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -151,21 +147,6 @@ public class GlobalExceptionHandler {
                 ));
     }
 
-    @ExceptionHandler(DataIntegrityViolationException.class)
-    public ResponseEntity<CustomErrorResponse> handleDataIntegrityViolationException(
-            DataIntegrityViolationException e) {
-
-        log.error(
-                "Error en la integridad de los datos: {}",
-                e.getCause() != null ? e.getCause() : e.getMessage()
-        );
-
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(new CustomErrorResponse(
-                        HttpStatus.BAD_REQUEST.value(),
-                        "Error en la integridad de los datos: " + e.getMessage()
-                ));
-    }
 
     @ExceptionHandler(SQLIntegrityConstraintViolationException.class)
     public ResponseEntity<CustomErrorResponse> handleSQLIntegrityConstraintViolationException(
@@ -180,33 +161,6 @@ public class GlobalExceptionHandler {
                 ));
     }
 
-    @ExceptionHandler(TransactionException.class)
-    public ResponseEntity<CustomErrorResponse> handleTransactionException(
-            TransactionException e) {
-
-        log.error("Error en la transacción: {}", e.getMessage());
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new CustomErrorResponse(
-                        HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                        "Error al realizar la transacción."
-                ));
-    }
-
-    @ExceptionHandler({
-            JpaSystemException.class,
-            DataAccessException.class
-    })
-    public ResponseEntity<CustomErrorResponse> handleJpaExceptions(Exception e) {
-
-        log.error("Error relacionado con JPA: {}", e.getMessage());
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new CustomErrorResponse(
-                        HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                        "Error en el acceso o la persistencia de los datos."
-                ));
-    }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<CustomErrorResponse> handleGeneralException(Exception e) {

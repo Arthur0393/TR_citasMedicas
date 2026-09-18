@@ -12,7 +12,7 @@ import java.util.Set;
 @Getter
 public enum EstadoCita {
 
-    PENDIENTE(1L, "Pendiente de firmar", true, false){
+    PENDIENTE(1L, "Pendiente de firmar", true, true) {
 
         @Override
         public Set<EstadoCita> puedeCambiar() {
@@ -20,30 +20,34 @@ public enum EstadoCita {
         }
     },
 
-    CONFIRMADA(2L, "Confirmada por el paciente", true, false){
+    CONFIRMADA(2L, "Confirmada por el paciente", true, false) {
+
         @Override
         public Set<EstadoCita> puedeCambiar() {
             return EnumSet.of(EN_CURSO, CANCELADA);
         }
     },
 
-    EN_CURSO(3L, "Paciente llego a su cita",true, false){
+    EN_CURSO(3L, "Paciente llego a su cita", false, false) {
+
         @Override
         public Set<EstadoCita> puedeCambiar() {
             return EnumSet.of(FINALIZADA);
         }
     },
 
-    FINALIZADA(4L, "Cita finalizada", false,true){
+    FINALIZADA(4L, "Cita finalizada", false, true) {
+
         @Override
         public Set<EstadoCita> puedeCambiar() {
             return Set.of();
         }
     },
 
-    CANCELADA(5L, "Cita cancelada", false,true){
-            @Override
-            public Set<EstadoCita> puedeCambiar() {
+    CANCELADA(5L, "Cita cancelada", false, true) {
+
+        @Override
+        public Set<EstadoCita> puedeCambiar() {
             return Set.of();
         }
     };
@@ -63,11 +67,16 @@ public enum EstadoCita {
     }
 
     public static EstadoCita obtenerEstadoCitaPorCodigo(Long codigo) {
-        for (EstadoCita e : values()) {
-            if(Objects.equals(e.codigo, codigo)) {
-                return e;
+
+        for (EstadoCita estadoCita : values()) {
+
+            if (Objects.equals(estadoCita.codigo, codigo)) {
+                return estadoCita;
             }
         }
-        throw new RecursoNoEncontradoException("Codigo de cita no valido: " + codigo);
+
+        throw new RecursoNoEncontradoException(
+                "Codigo de cita no valido: " + codigo
+        );
     }
 }

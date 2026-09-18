@@ -10,10 +10,18 @@ import jakarta.validation.constraints.Positive;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@Tag(name = "API Pacientes", description = "Metodos para la gestion de pacientes")
+
+// Ruta base para todos los endpoints relacionados con pacientes.
+@RequestMapping("/api/pacientes")
+
+@Tag(
+        name = "API Pacientes",
+        description = "Metodos para la gestion de pacientes"
+)
 public class PacienteController
         extends CrudController<PacienteRequest, PacienteResponse, PacienteService> {
 
@@ -21,11 +29,25 @@ public class PacienteController
         super(service);
     }
 
+    /*
+     * Endpoint especial utilizado para obtener un paciente
+     * sin importar si su registro está ACTIVO o ELIMINADO.
+     *
+     * Es utilizado principalmente por Citas para mantener
+     * la integridad histórica.
+     */
     @GetMapping("/id-paciente/{id}")
-    @Operation(summary = "Obtener paciente por id sin importar el estado del registro")
+    @Operation(
+            summary = "Obtener paciente por id sin importar el estado del registro"
+    )
     public ResponseEntity<PacienteResponse> obtenerPacientePorId(
-            @PathVariable @Positive(message = "El ID debe ser positivo") Long id
+            @PathVariable
+            @Positive(message = "El ID debe ser positivo")
+            Long id
     ) {
-        return ResponseEntity.ok(service.obtenerPacientePorIdSinEstado(id));
+
+        return ResponseEntity.ok(
+                service.obtenerPacientePorIdSinEstado(id)
+        );
     }
 }

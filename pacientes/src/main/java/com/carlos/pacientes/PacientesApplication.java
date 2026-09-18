@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication(
 		scanBasePackages = {
-				"com.carlos.msv.pacientes",
+				"com.carlos.pacientes",
 				"com.carlos.commons"
 		}
 )

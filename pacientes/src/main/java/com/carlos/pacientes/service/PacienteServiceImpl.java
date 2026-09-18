@@ -5,7 +5,9 @@ import com.carlos.commons.dto.pacientes.PacienteRequest;
 import com.carlos.commons.dto.pacientes.PacienteResponse;
 import com.carlos.commons.enums.EstadoRegistro;
 import com.carlos.commons.exceptions.RecursoNoEncontradoException;
+import com.carlos.commons.exceptions.EntidadRelacionadaException;
 import com.carlos.pacientes.entity.Paciente;
+import com.carlos.pacientes.mapper.PacienteMapper;
 import com.carlos.pacientes.repository.PacienteRepository;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,22 +23,35 @@ import java.util.List;
 public class PacienteServiceImpl implements PacienteService {
 
     private final PacienteRepository pacienteRepository;
+
+    // Mapper encargado de transformar Request ↔ Entity ↔ Response.
+    private final PacienteMapper pacienteMapper;
+
+    // Cliente Feign utilizado para consultar reglas del microservicio de citas.
     private final CitaClient citaClient;
 
-    @Transactional(readOnly = true)
     @Override
+    @Transactional(readOnly = true)
     public PacienteResponse obtenerPacientePorIdSinEstado(Long id) {
 
-        log.info("Buscando paciente sin estado con id {}", id);
-
-        return convertirAResponse(
-                pacienteRepository.findById(id)
-                        .orElseThrow(() ->
-                                new RecursoNoEncontradoException(
-                                        "Paciente sin estado no encontrado con id: " + id
-                                )
-                        )
+        log.info(
+                "Buscando paciente sin importar estado con id {}",
+                id
         );
+
+        /*
+         * Este endpoint forma parte de la integridad histórica.
+         * Puede devolver tanto pacientes ACTIVOS como ELIMINADOS.
+         */
+        Paciente paciente = pacienteRepository
+                .findById(id)
+                .orElseThrow(() ->
+                        new RecursoNoEncontradoException(
+                                "Paciente no encontrado con id: " + id
+                        )
+                );
+
+        return pacienteMapper.entidadAResponse(paciente);
     }
 
     @Override
@@ -45,10 +60,13 @@ public class PacienteServiceImpl implements PacienteService {
 
         log.info("Listando todos los pacientes activos");
 
+        /*
+         * Los listados normales solamente muestran registros ACTIVOS.
+         */
         return pacienteRepository
                 .findByEstadoRegistro(EstadoRegistro.ACTIVO)
                 .stream()
-                .map(this::convertirAResponse)
+                .map(pacienteMapper::entidadAResponse)
                 .toList();
     }
 
@@ -56,9 +74,13 @@ public class PacienteServiceImpl implements PacienteService {
     @Transactional(readOnly = true)
     public PacienteResponse obtenerPorId(Long id) {
 
-        return convertirAResponse(
-                obtenerPacienteActivoPorId(id)
-        );
+        /*
+         * GET /{id} solamente permite consultar pacientes ACTIVOS.
+         */
+        Paciente paciente =
+                obtenerPacienteActivoPorId(id);
+
+        return pacienteMapper.entidadAResponse(paciente);
     }
 
     @Override
@@ -66,57 +88,159 @@ public class PacienteServiceImpl implements PacienteService {
 
         log.info("Registrando nuevo paciente");
 
+        /*
+         * Email y teléfono solamente deben ser únicos
+         * entre pacientes con estado ACTIVO.
+         */
         validarDatosUnicos(request);
 
-        Double imc =
-                request.peso() / (request.estatura() * request.estatura());
-
-        String numExpediente =
-                String.join("X", request.telefono().split("")) + "X";
-
-        Paciente paciente = Paciente.builder()
-                .nombre(request.nombre())
-                .apellidoPaterno(request.apellidoPaterno())
-                .apellidoMaterno(request.apellidoMaterno())
-                .edad(request.edad())
-                .peso(request.peso())
-                .estatura(request.estatura())
-                .imc(imc)
-                .email(request.email())
-                .numExpediente(numExpediente)
-                .telefono(request.telefono())
-                .direccion(request.direccion())
-                .estadoRegistro(EstadoRegistro.ACTIVO)
-                .build();
+        /*
+         * El Mapper se encarga de:
+         *
+         * - calcular el IMC;
+         * - generar el número de expediente;
+         * - normalizar los datos;
+         * - establecer ESTADO_REGISTRO = ACTIVO.
+         */
+        Paciente paciente =
+                pacienteMapper.requestAEntidad(request);
 
         pacienteRepository.save(paciente);
 
-        log.info("Nuevo paciente registrado: {}", paciente);
+        log.info(
+                "Nuevo paciente registrado con id {}",
+                paciente.getId()
+        );
 
-        return convertirAResponse(paciente);
+        return pacienteMapper.entidadAResponse(paciente);
     }
 
-    private void validarDatosUnicos(PacienteRequest request) {
+    @Override
+    public PacienteResponse actualizar(
+            PacienteRequest request,
+            Long id
+    ) {
 
-        log.info("Validando email unico");
+        // Primero comprobamos que el paciente exista y esté ACTIVO.
+        Paciente paciente =
+                obtenerPacienteActivoPorId(id);
 
-        if (pacienteRepository.existsByEmailIgnoreCaseAndEstadoRegistro(
-                request.email(),
-                EstadoRegistro.ACTIVO
-        )) {
-            throw new IllegalArgumentException(
+        log.info(
+                "Actualizando paciente con id {}",
+                id
+        );
+
+        /*
+         * CORRECCIÓN DEL PROFESOR:
+         *
+         * Antes de comprobar email/teléfono debemos verificar
+         * que la regla de negocio permita modificar al paciente.
+         *
+         * Un paciente NO puede actualizarse si tiene una cita:
+         *
+         * - CONFIRMADA
+         * - EN_CURSO
+         */
+        validarCitasBloqueantesParaPaciente(id);
+
+        /*
+         * Una vez comprobada la regla de citas,
+         * verificamos la unicidad de email y teléfono.
+         */
+        validarCambiosUnicos(request, id);
+
+        /*
+         * El Mapper calcula nuevamente IMC y expediente
+         * cuando corresponda y actualiza la Entity.
+         */
+        pacienteMapper.actualizarEntidad(
+                paciente,
+                request
+        );
+
+        /*
+         * No es obligatorio llamar save() porque la Entity está
+         * administrada por JPA dentro de la transacción.
+         * Se deja explícito para que el flujo sea fácil de identificar.
+         */
+        pacienteRepository.save(paciente);
+
+        log.info(
+                "Paciente con id {} actualizado correctamente",
+                id
+        );
+
+        return pacienteMapper.entidadAResponse(paciente);
+    }
+
+    @Override
+    public void eliminar(Long id) {
+
+        // Solamente se pueden eliminar lógicamente pacientes ACTIVOS.
+        Paciente paciente =
+                obtenerPacienteActivoPorId(id);
+
+        log.info(
+                "Eliminando paciente con id {}",
+                id
+        );
+
+        /*
+         * Un paciente NO puede eliminarse si tiene una cita:
+         *
+         * - CONFIRMADA
+         * - EN_CURSO
+         */
+        validarCitasBloqueantesParaPaciente(id);
+
+        /*
+         * La Entity realiza borrado lógico:
+         *
+         * ACTIVO → ELIMINADO
+         *
+         * Nunca se elimina físicamente el registro.
+         */
+        paciente.eliminar();
+
+        pacienteRepository.save(paciente);
+
+        log.info(
+                "Paciente con id {} eliminado logicamente",
+                id
+        );
+    }
+
+    private void validarDatosUnicos(
+            PacienteRequest request
+    ) {
+
+        log.info(
+                "Validando email unico entre pacientes activos"
+        );
+
+        if (pacienteRepository
+                .existsByEmailIgnoreCaseAndEstadoRegistro(
+                        request.email(),
+                        EstadoRegistro.ACTIVO
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un paciente activo registrado con este email: "
                             + request.email()
             );
         }
 
-        log.info("Validando telefono unico");
+        log.info(
+                "Validando telefono unico entre pacientes activos"
+        );
 
-        if (pacienteRepository.existsByTelefonoAndEstadoRegistro(
-                request.telefono(),
-                EstadoRegistro.ACTIVO
-        )) {
-            throw new IllegalArgumentException(
+        if (pacienteRepository
+                .existsByTelefonoAndEstadoRegistro(
+                        request.telefono(),
+                        EstadoRegistro.ACTIVO
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un paciente activo registrado con este telefono: "
                             + request.telefono()
             );
@@ -128,82 +252,59 @@ public class PacienteServiceImpl implements PacienteService {
             Long id
     ) {
 
-        log.info("Validando email unico");
+        log.info(
+                "Validando email unico durante actualización"
+        );
 
-        if (pacienteRepository.existsByEmailIgnoreCaseAndEstadoRegistroAndIdNot(
-                request.email(),
-                EstadoRegistro.ACTIVO,
-                id
-        )) {
-            throw new IllegalArgumentException(
+        /*
+         * Se excluye al propio paciente mediante IdNot,
+         * porque conservar su mismo email es perfectamente válido.
+         */
+        if (pacienteRepository
+                .existsByEmailIgnoreCaseAndEstadoRegistroAndIdNot(
+                        request.email(),
+                        EstadoRegistro.ACTIVO,
+                        id
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un paciente activo registrado con este email: "
                             + request.email()
             );
         }
 
-        log.info("Validando telefono unico");
+        log.info(
+                "Validando telefono unico durante actualización"
+        );
 
-        if (pacienteRepository.existsByTelefonoAndEstadoRegistroAndIdNot(
-                request.telefono(),
-                EstadoRegistro.ACTIVO,
-                id
-        )) {
-            throw new IllegalArgumentException(
+        /*
+         * Igual que con el email, se excluye el registro actual.
+         */
+        if (pacienteRepository
+                .existsByTelefonoAndEstadoRegistroAndIdNot(
+                        request.telefono(),
+                        EstadoRegistro.ACTIVO,
+                        id
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un paciente activo registrado con este telefono: "
                             + request.telefono()
             );
         }
     }
 
-    @Override
-    public PacienteResponse actualizar(
-            PacienteRequest request,
-            Long id
-    ) {
-
-        Paciente paciente = obtenerPacienteActivoPorId(id);
-
-        log.info("Actualizando paciente con id {}", id);
-
-        validarCambiosUnicos(request, id);
-
-        validarCitasBloqueantes(id);
-
-        paciente.actualizar(
-                request.nombre(),
-                request.apellidoPaterno(),
-                request.apellidoMaterno(),
-                request.edad(),
-                request.peso(),
-                request.estatura(),
-                request.email(),
-                request.telefono(),
-                request.direccion()
-        );
-
-        log.info("Paciente actualizado correctamente");
-
-        return convertirAResponse(paciente);
-    }
-
-    @Override
-    public void eliminar(Long id) {
-
-        Paciente paciente = obtenerPacienteActivoPorId(id);
-
-        log.info("Eliminando paciente con id {}", id);
-
-        validarCitasBloqueantes(id);
-
-        paciente.eliminar();
-
-        log.info("Paciente eliminado exitosamente");
-    }
-
     private Paciente obtenerPacienteActivoPorId(Long id) {
 
-        log.info("Buscando paciente con id {}", id);
+        log.info(
+                "Buscando paciente activo con id {}",
+                id
+        );
 
+        /*
+         * Los endpoints normales trabajan únicamente
+         * con registros cuyo ESTADO_REGISTRO sea ACTIVO.
+         */
         return pacienteRepository
                 .findByIdAndEstadoRegistro(
                         id,
@@ -216,28 +317,32 @@ public class PacienteServiceImpl implements PacienteService {
                 );
     }
 
-    private PacienteResponse convertirAResponse(Paciente paciente) {
+    private void validarCitasBloqueantesParaPaciente(
+            Long idPaciente
+    ) {
 
-        return new PacienteResponse(
-                paciente.getId(),
-                paciente.getNombre(),
-                paciente.getEdad(),
-                paciente.getPeso(),
-                paciente.getEstatura(),
-                paciente.getImc(),
-                paciente.getEmail(),
-                paciente.getTelefono(),
-                paciente.getDireccion(),
-                paciente.getNumExpediente()
+        log.info(
+                "Validando citas CONFIRMADAS o EN_CURSO del paciente {}",
+                idPaciente
         );
-    }
-    private void validarCitasBloqueantes(Long idPaciente) {
 
-        log.info("Validando citas bloqueantes del paciente con id {}", idPaciente);
+        /*
+         * Regla específica del módulo PACIENTES:
+         *
+         * El paciente no puede modificarse ni eliminarse
+         * si tiene una cita CONFIRMADA o EN_CURSO.
+         *
+         * IMPORTANTE:
+         * PENDIENTE no bloquea PUT/DELETE del paciente.
+         */
+        if (citaClient
+                .pacienteTieneCitaBloqueanteParaModificacion(
+                        idPaciente
+                )) {
 
-        if (citaClient.pacienteTieneCitaBloqueante(idPaciente)) {
             throw new IllegalStateException(
-                    "El paciente tiene una cita CONFIRMADA o EN_CURSO y no puede actualizarse ni eliminarse"
+                    "El paciente tiene una cita CONFIRMADA o EN_CURSO "
+                            + "y no puede actualizarse ni eliminarse"
             );
         }
     }

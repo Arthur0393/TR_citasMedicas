@@ -1,11 +1,13 @@
 package com.carlos.msv.medicos.service;
 
+import com.carlos.commons.clients.CitaClient;
 import com.carlos.commons.dto.medicos.MedicoRequest;
 import com.carlos.commons.dto.medicos.MedicoResponse;
 import com.carlos.commons.enums.DisponibilidadMedico;
 import com.carlos.commons.enums.EspecialidadMedico;
 import com.carlos.commons.enums.EstadoRegistro;
 import com.carlos.commons.exceptions.RecursoNoEncontradoException;
+import com.carlos.commons.exceptions.EntidadRelacionadaException;
 import com.carlos.msv.medicos.entity.Medico;
 import com.carlos.msv.medicos.mapper.MedicoMapper;
 import com.carlos.msv.medicos.repository.MedicoRepository;
@@ -26,12 +28,27 @@ public class MedicoServiceImpl implements MedicoService {
 
     private final MedicoMapper medicoMapper;
 
+    /*
+     * Cliente Feign utilizado para consultar al microservicio de Citas.
+     *
+     * Nos permite validar las reglas de negocio relacionadas
+     * con las citas asignadas al médico.
+     */
+    private final CitaClient citaClient;
+
     @Transactional(readOnly = true)
     @Override
     public MedicoResponse obtenerMedicoPorIdSinEstado(Long id) {
 
         log.info("Buscando medico sin estado con id {}", id);
 
+        /*
+         * Este método permite recuperar al médico sin importar
+         * si se encuentra ACTIVO o ELIMINADO.
+         *
+         * Es necesario para conservar la integridad histórica
+         * de las citas.
+         */
         return medicoMapper.entidadAResponse(
                 medicoRepository.findById(id)
                         .orElseThrow(() ->
@@ -48,22 +65,68 @@ public class MedicoServiceImpl implements MedicoService {
             Long idDisponibilidad
     ) {
 
-        Medico medico = obtenerMedicoActivoPorId(idMedico);
+        /*
+         * Primero comprobamos que el médico exista
+         * y se encuentre ACTIVO.
+         */
+        Medico medico =
+                obtenerMedicoActivoPorId(idMedico);
 
         log.info(
                 "Actualizando disponibilidad del medico con id: {}",
                 idMedico
         );
 
+        /*
+         * Convertimos el identificador recibido
+         * al Enum correspondiente.
+         */
         DisponibilidadMedico nuevaDisponibilidad =
                 DisponibilidadMedico.obtenerDisponibilidadPorCodigo(
                         idDisponibilidad
                 );
 
+        /*
+         * REGLA DE NEGOCIO:
+         *
+         * Un médico NO puede pasar a DISPONIBLE mientras
+         * tenga una cita activa:
+         *
+         * - PENDIENTE
+         * - CONFIRMADA
+         * - EN_CURSO
+         *
+         * IMPORTANTE:
+         * Esta validación solamente se ejecuta cuando se intenta
+         * establecer DISPONIBLE.
+         *
+         * De esta manera Citas todavía puede cambiar automáticamente:
+         *
+         * PENDIENTE/CONFIRMADA -> NO_DISPONIBLE
+         * EN_CURSO             -> EN_CONSULTA
+         */
+        if (nuevaDisponibilidad == DisponibilidadMedico.DISPONIBLE) {
+
+            validarMedicoPuedeQuedarDisponible(
+                    idMedico
+            );
+        }
+
         DisponibilidadMedico disponibilidadAnterior =
                 medico.getDisponibilidad();
 
-        medico.actualizarDisponibilidadMedico(nuevaDisponibilidad);
+        /*
+         * La Entity es responsable de modificar
+         * su propio estado interno.
+         */
+        medico.actualizarDisponibilidadMedico(
+                nuevaDisponibilidad
+        );
+
+        /*
+         * Guardamos explícitamente el cambio.
+         */
+        medicoRepository.save(medico);
 
         log.info(
                 "Disponibilidad del medico con id {} cambio de {} a {}",
@@ -79,6 +142,10 @@ public class MedicoServiceImpl implements MedicoService {
 
         log.info("Listando todos los medicos activos");
 
+        /*
+         * Los listados normales solamente muestran
+         * registros ACTIVOS.
+         */
         return medicoRepository
                 .findByEstadoRegistro(EstadoRegistro.ACTIVO)
                 .stream()
@@ -90,6 +157,9 @@ public class MedicoServiceImpl implements MedicoService {
     @Transactional(readOnly = true)
     public MedicoResponse obtenerPorId(Long id) {
 
+        /*
+         * Este GET solamente devuelve médicos ACTIVOS.
+         */
         return medicoMapper.entidadAResponse(
                 obtenerMedicoActivoPorId(id)
         );
@@ -100,32 +170,59 @@ public class MedicoServiceImpl implements MedicoService {
 
         log.info("Registrando nuevo medico");
 
-        Medico medico = medicoMapper.requestAEntidad(request);
+        /*
+         * Antes de registrar verificamos la unicidad
+         * de email, teléfono y cédula entre médicos ACTIVOS.
+         */
+        validarDatosUnicos(request);
 
+        /*
+         * El Mapper transforma el Request en la Entity.
+         *
+         * El médico inicia:
+         *
+         * - ACTIVO
+         * - DISPONIBLE
+         */
+        Medico medico =
+                medicoMapper.requestAEntidad(request);
+
+        /*
+         * Convertimos el identificador de especialidad
+         * al Enum correspondiente.
+         */
         medico.actualizarEspecialidad(
                 EspecialidadMedico.obtenerEspecialidadPorCodigo(
                         request.idEspecialidad()
                 )
         );
 
-        validarDatosUnicos(request);
-
         medicoRepository.save(medico);
 
-        log.info("Nuevo medico registrado: {}", medico);
+        log.info(
+                "Nuevo medico registrado con id {}",
+                medico.getId()
+        );
 
         return medicoMapper.entidadAResponse(medico);
     }
 
-    private void validarDatosUnicos(MedicoRequest request) {
+    private void validarDatosUnicos(
+            MedicoRequest request
+    ) {
 
         log.info("Validando email unico");
 
-        if (medicoRepository.existsByEmailIgnoreCaseAndEstadoRegistro(
-                request.email(),
-                EstadoRegistro.ACTIVO
-        )) {
-            throw new IllegalArgumentException(
+        /*
+         * La unicidad solamente aplica entre médicos ACTIVOS.
+         */
+        if (medicoRepository
+                .existsByEmailIgnoreCaseAndEstadoRegistro(
+                        request.email(),
+                        EstadoRegistro.ACTIVO
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con este email: "
                             + request.email()
             );
@@ -133,11 +230,13 @@ public class MedicoServiceImpl implements MedicoService {
 
         log.info("Validando telefono unico");
 
-        if (medicoRepository.existsByTelefonoAndEstadoRegistro(
-                request.telefono(),
-                EstadoRegistro.ACTIVO
-        )) {
-            throw new IllegalArgumentException(
+        if (medicoRepository
+                .existsByTelefonoAndEstadoRegistro(
+                        request.telefono(),
+                        EstadoRegistro.ACTIVO
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con este telefono: "
                             + request.telefono()
             );
@@ -145,11 +244,13 @@ public class MedicoServiceImpl implements MedicoService {
 
         log.info("Validando cedula profesional unica");
 
-        if (medicoRepository.existsByCedulaProfesionalIgnoreCaseAndEstadoRegistro(
-                request.cedulaProfesional(),
-                EstadoRegistro.ACTIVO
-        )) {
-            throw new IllegalArgumentException(
+        if (medicoRepository
+                .existsByCedulaProfesionalIgnoreCaseAndEstadoRegistro(
+                        request.cedulaProfesional(),
+                        EstadoRegistro.ACTIVO
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con la cedula profesional: "
                             + request.cedulaProfesional()
             );
@@ -161,40 +262,50 @@ public class MedicoServiceImpl implements MedicoService {
             Long id
     ) {
 
-        log.info("Validando email unico");
+        log.info("Validando email unico durante actualizacion");
 
-        if (medicoRepository.existsByEmailIgnoreCaseAndEstadoRegistroAndIdNot(
-                request.email(),
-                EstadoRegistro.ACTIVO,
-                id
-        )) {
-            throw new IllegalArgumentException(
+        /*
+         * IdNot permite conservar el mismo valor
+         * perteneciente al médico que estamos modificando.
+         */
+        if (medicoRepository
+                .existsByEmailIgnoreCaseAndEstadoRegistroAndIdNot(
+                        request.email(),
+                        EstadoRegistro.ACTIVO,
+                        id
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con este email: "
                             + request.email()
             );
         }
 
-        log.info("Validando telefono unico");
+        log.info("Validando telefono unico durante actualizacion");
 
-        if (medicoRepository.existsByTelefonoAndEstadoRegistroAndIdNot(
-                request.telefono(),
-                EstadoRegistro.ACTIVO,
-                id
-        )) {
-            throw new IllegalArgumentException(
+        if (medicoRepository
+                .existsByTelefonoAndEstadoRegistroAndIdNot(
+                        request.telefono(),
+                        EstadoRegistro.ACTIVO,
+                        id
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con este telefono: "
                             + request.telefono()
             );
         }
 
-        log.info("Validando cedula profesional unica");
+        log.info("Validando cedula profesional unica durante actualizacion");
 
-        if (medicoRepository.existsByCedulaProfesionalIgnoreCaseAndEstadoRegistroAndIdNot(
-                request.cedulaProfesional(),
-                EstadoRegistro.ACTIVO,
-                id
-        )) {
-            throw new IllegalArgumentException(
+        if (medicoRepository
+                .existsByCedulaProfesionalIgnoreCaseAndEstadoRegistroAndIdNot(
+                        request.cedulaProfesional(),
+                        EstadoRegistro.ACTIVO,
+                        id
+                )) {
+
+            throw new EntidadRelacionadaException(
                     "Ya existe un medico activo registrado con la cedula profesional: "
                             + request.cedulaProfesional()
             );
@@ -207,12 +318,47 @@ public class MedicoServiceImpl implements MedicoService {
             Long id
     ) {
 
-        Medico medico = obtenerMedicoActivoPorId(id);
+        /*
+         * Primero comprobamos que el médico exista
+         * y se encuentre ACTIVO.
+         */
+        Medico medico =
+                obtenerMedicoActivoPorId(id);
 
-        log.info("Actualizando medico con id {}", id);
+        log.info(
+                "Actualizando medico con id {}",
+                id
+        );
 
-        validarCambiosUnicos(request, id);
+        /*
+         * CORRECCIÓN DE LA OBSERVACIÓN DEL PROFESOR:
+         *
+         * Antes de realizar cualquier actualización,
+         * comprobamos que el médico NO tenga citas:
+         *
+         * - CONFIRMADA
+         * - EN_CURSO
+         *
+         * Esta validación debe ejecutarse ANTES
+         * de comprobar los campos únicos.
+         */
+        validarCitasBloqueantesParaModificacion(
+                id
+        );
 
+        /*
+         * Una vez superada la regla de negocio,
+         * comprobamos email, teléfono y cédula.
+         */
+        validarCambiosUnicos(
+                request,
+                id
+        );
+
+        /*
+         * Delegamos a la Entity la actualización
+         * de sus propios atributos.
+         */
         medico.actualizar(
                 request.nombre(),
                 request.apellidoPaterno(),
@@ -226,7 +372,12 @@ public class MedicoServiceImpl implements MedicoService {
                 )
         );
 
-        log.info("Medico actualizado correctamente");
+        medicoRepository.save(medico);
+
+        log.info(
+                "Medico con id {} actualizado correctamente",
+                id
+        );
 
         return medicoMapper.entidadAResponse(medico);
     }
@@ -234,19 +385,57 @@ public class MedicoServiceImpl implements MedicoService {
     @Override
     public void eliminar(Long id) {
 
-        Medico medico = obtenerMedicoActivoPorId(id);
+        /*
+         * Solamente podemos eliminar lógicamente
+         * médicos que actualmente estén ACTIVOS.
+         */
+        Medico medico =
+                obtenerMedicoActivoPorId(id);
 
-        log.info("Eliminando medico con id {}", id);
+        log.info(
+                "Eliminando medico con id {}",
+                id
+        );
 
+        /*
+         * CORRECCIÓN DE LA OBSERVACIÓN DEL PROFESOR:
+         *
+         * Un médico NO puede eliminarse mientras
+         * tenga una cita:
+         *
+         * - CONFIRMADA
+         * - EN_CURSO
+         */
+        validarCitasBloqueantesParaModificacion(
+                id
+        );
+
+        /*
+         * La eliminación es lógica:
+         *
+         * ACTIVO -> ELIMINADO
+         */
         medico.eliminar();
 
-        log.info("Medico eliminado exitosamente");
+        medicoRepository.save(medico);
+
+        log.info(
+                "Medico con id {} eliminado logicamente",
+                id
+        );
     }
 
     private Medico obtenerMedicoActivoPorId(Long id) {
 
-        log.info("Buscando medico con id {}", id);
+        log.info(
+                "Buscando medico activo con id {}",
+                id
+        );
 
+        /*
+         * Las operaciones normales solamente trabajan
+         * con médicos ACTIVOS.
+         */
         return medicoRepository
                 .findByIdAndEstadoRegistro(
                         id,
@@ -257,5 +446,68 @@ public class MedicoServiceImpl implements MedicoService {
                                 "Medico activo no encontrado con id: " + id
                         )
                 );
+    }
+
+    /*
+     * Valida las reglas correspondientes al PUT y DELETE
+     * del módulo de Médicos.
+     *
+     * Solamente bloquean:
+     *
+     * - CONFIRMADA
+     * - EN_CURSO
+     *
+     * Una cita PENDIENTE no bloquea estas dos operaciones.
+     */
+    private void validarCitasBloqueantesParaModificacion(
+            Long idMedico
+    ) {
+
+        log.info(
+                "Validando citas CONFIRMADAS o EN_CURSO del medico {}",
+                idMedico
+        );
+
+        if (citaClient
+                .medicoTieneCitaBloqueanteParaModificacion(
+                        idMedico
+                )) {
+
+            throw new IllegalStateException(
+                    "El medico tiene una cita CONFIRMADA o EN_CURSO "
+                            + "y no puede ser actualizado o eliminado"
+            );
+        }
+    }
+
+    /*
+     * Valida específicamente si un médico puede
+     * pasar al estado DISPONIBLE.
+     *
+     * En esta regla sí bloquean:
+     *
+     * - PENDIENTE
+     * - CONFIRMADA
+     * - EN_CURSO
+     */
+    private void validarMedicoPuedeQuedarDisponible(
+            Long idMedico
+    ) {
+
+        log.info(
+                "Validando si el medico {} puede quedar DISPONIBLE",
+                idMedico
+        );
+
+        if (citaClient
+                .medicoTieneCitaActivaBloqueante(
+                        idMedico
+                )) {
+
+            throw new IllegalStateException(
+                    "El medico tiene una cita PENDIENTE, CONFIRMADA "
+                            + "o EN_CURSO y no puede quedar DISPONIBLE"
+            );
+        }
     }
 }

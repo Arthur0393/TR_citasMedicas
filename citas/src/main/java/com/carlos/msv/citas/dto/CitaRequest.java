@@ -20,9 +20,9 @@ public record CitaRequest(
 
         @Schema(
                 description = "Fecha y hora programada para la cita. (Debe ser una fecha y hora actual o futura)",
-                example = "25/09/2026",
+                example = "25/09/2026 14:30",
                 type = "string",
-                format = "data-time"
+                format = "date-time"
         )
         @NotNull(message = "La fecha de la cita es requerida")
         @FutureOrPresent(message = "La fecha de la cita debe ser futura")
